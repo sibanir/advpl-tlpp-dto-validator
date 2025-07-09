@@ -1,0 +1,377 @@
+#INCLUDE "TOPCONN.CH"
+#INCLUDE 'tlpp-core.th'
+#include "tlpp-rest.th"
+
+// Constantes para tipos de dados
+#DEFINE TYPE_ARRAY      "A"
+#DEFINE TYPE_BLOCK      "B"
+#DEFINE TYPE_CHARACTER  "C"
+#DEFINE TYPE_DATE       "D"
+#DEFINE TYPE_BOOLEAN    "L"
+#DEFINE TYPE_MEMO       "M"
+#DEFINE TYPE_NUMERIC    "N"
+#DEFINE TYPE_OBJECT     "O"
+#DEFINE TYPE_NULL       "U"
+#DEFINE TYPE_JSON       "J"
+
+NameSpace custom.backoffice.utils
+using namespace tlpp.regex
+
+//---------------------------------------------------------------------------------------------------
+/*/{Protheus.doc} DTOValidator
+    Classe para validação de DTOs.
+
+    @version 1.0
+    @type    Class
+/*/
+//---------------------------------------------------------------------------------------------------
+
+Class DTOValidator
+	Public Data errorMessage as Character
+
+	Public Method new() Constructor
+	Public Method validateDTOStructure(jBodyReceived, jBodyDTO)
+	Private Method validateField(cFieldName, jFieldRules, jBodyReceived, cParentFieldName)
+	Private Method validateFieldType(cValue, cExpectedType, cFieldName)
+	Private Method validateFieldPattern(cValue, cPattern, cFieldName)
+	Private Method validateFieldLength(cValue, nMin, nMax, cFieldName)
+	Private Method validateFieldRange(nValue, nMin, nMax, cFieldName)
+	Private Method validateFieldValueList(cValue, aValueList, cFieldName)
+	Private Method getTypeDescription(cType)
+	Private Method setErrorMessage(cMessage)
+EndClass
+
+//---------------------------------------------------------------------------------------------------
+/*/{Protheus.doc} New
+    Construtor da classe DTOValidator.
+
+    @version 1.0
+    @type    Class
+/*/
+//---------------------------------------------------------------------------------------------------
+Method new() Class DTOValidator
+	::errorMessage := ""
+Return(Self)
+
+//---------------------------------------------------------------------------------------------------
+/*/{Protheus.doc} validateDTOStructure
+    Valida a estrutura do DTO recebido com base nas regras definidas.
+
+    @param jBodyReceived - Objeto JSON recebido.
+    @param jBodyDTO - Objeto JSON com as regras de validação.
+    @return Logical - Retorna .T. se a validação for bem-sucedida, .F. caso contrário.
+/*/
+//---------------------------------------------------------------------------------------------------
+Method validateDTOStructure(jBodyReceived, jBodyDTO) Class DTOValidator
+	Local lIsValid := .T.
+	Local aFieldsDTO := jBodyDTO:GetNames()
+	Local nI
+
+	For nI := 1 To Len(aFieldsDTO)
+		If !lIsValid
+			Exit
+		EndIf
+
+		lIsValid := ::validateField(aFieldsDTO[nI], jBodyDTO:GetJsonObject(aFieldsDTO[nI]), jBodyReceived, "")
+	Next nI
+
+Return(lIsValid)
+
+//---------------------------------------------------------------------------------------------------
+/*/{Protheus.doc} validateField
+    Valida um campo específico com base nas regras definidas.
+
+    @param cFieldName - Nome do campo.
+    @param jFieldRules - Regras de validação do campo.
+    @param jBodyReceived - Objeto JSON recebido.
+    @param cParentFieldName - Nome do campo pai (para campos aninhados).
+    @return Logical - Retorna .T. se a validação for bem-sucedida, .F. caso contrário.
+/*/
+//---------------------------------------------------------------------------------------------------
+Method validateField(cFieldName, jFieldRules, jBodyReceived, cParentFieldName) Class DTOValidator
+	Local lIsValid := .T.
+	Local cFieldPath := If(Empty(cParentFieldName), cFieldName, cParentFieldName + ":" + cFieldName)
+	Local cValueReceived := jBodyReceived:GetJsonObject(cFieldName)
+	Local cTypeReceived := ValType(cValueReceived)
+	Local cTypeDTO := jFieldRules['type']
+	Local lIsRequired := jFieldRules['required']
+	Local xDefaultValue := jFieldRules['default']
+	Local nMinLength := jFieldRules['min']
+	Local nMaxLength := jFieldRules['max']
+	Local aValueList := jFieldRules['valueList']
+	Local cPattern := jFieldRules['pattern']
+	Local jNestedFields := jFieldRules['fields']
+	Local jNestedBody, aNestedFields, nJ, nK, jItemRules, nL, cItemField, jFieldDef, cItemValue
+
+	// Validações básicas de obrigatoriedade e tipo
+	If !lIsRequired .AND. cTypeReceived == TYPE_NULL
+		If xDefaultValue != Nil
+			jBodyReceived:SetJsonObject(cFieldName, xDefaultValue)
+		EndIf
+		Return(.T.)
+	EndIf
+
+	If lIsRequired .AND. cTypeReceived == TYPE_NULL
+		::setErrorMessage("O campo [" + cFieldPath + "] é obrigatório.")
+		Return(.F.)
+	EndIf
+
+	If !::validateFieldType(cValueReceived, cTypeDTO, cFieldPath)
+		Return(.F.)
+	EndIf
+
+	// Valida campos aninhados (se houver)
+	If cTypeDTO == TYPE_JSON .AND. jNestedFields != Nil .AND. cTypeReceived != TYPE_NULL
+		jNestedBody := jBodyReceived:GetJsonObject(cFieldName)
+		aNestedFields := jNestedFields:GetNames()
+
+		For nJ := 1 To Len(aNestedFields)
+			If !lIsValid
+				Exit
+			EndIf
+
+			lIsValid := ::validateField(aNestedFields[nJ], jNestedFields:GetJsonObject(aNestedFields[nJ]), jNestedBody, cFieldPath)
+		Next nJ
+
+		If !lIsValid
+			Return(.F.)
+		EndIf
+	EndIf
+
+	// Valida arrays
+	If cTypeDTO == TYPE_ARRAY .AND. cTypeReceived == TYPE_ARRAY
+		If lIsRequired .AND. Len(cValueReceived) == 0
+			::setErrorMessage("O campo [" + cFieldPath + "] é obrigatório e deve conter pelo menos um elemento.")
+			Return(.F.)
+		EndIf
+
+		jItemRules := jFieldRules['items']
+
+
+		For nK := 1 To Len(cValueReceived)
+			jItem := cValueReceived[nK]
+
+			If jItemRules['type'] == TYPE_JSON
+				aItemFields := jItemRules['fields']:GetNames()
+
+				For nL := 1 To Len(aItemFields)
+					cItemField := aItemFields[nL]
+					jFieldDef := jItemRules['fields']:GetJsonObject(cItemField)
+
+					If jFieldDef['required'] .AND. jItem:GetJsonObject(cItemField) == Nil
+						::setErrorMessage("O campo [" + cFieldPath + "[" + cValToChar(nK) + "]:" + cItemField + "] é obrigatório.")
+						Return(.F.)
+					EndIf
+
+					If jItem:GetJsonObject(cItemField) != Nil .AND. !::validateField(cItemField, jFieldDef, jItem, cFieldPath + "[" + cValToChar(nK) + "]")
+						Return(.F.)
+					EndIf
+				Next nL
+			Else
+				cItemValue := jItem
+
+				If !::validateFieldType(cItemValue, jItemRules['type'], cFieldPath + "[" + cValToChar(nK) + "]")
+					Return(.F.)
+				EndIf
+
+				If jItemRules['type'] == TYPE_CHARACTER
+					If !Empty(jItemRules['pattern']) .AND. !::validateFieldPattern(cItemValue, jItemRules['pattern'], cFieldPath + "[" + cValToChar(nK) + "]")
+						Return(.F.)
+					EndIf
+
+					If !::validateFieldLength(cItemValue, jItemRules['min'], jItemRules['max'], cFieldPath + "[" + cValToChar(nK) + "]")
+						Return(.F.)
+					EndIf
+				EndIf
+
+				If jItemRules['type'] == TYPE_NUMERIC .AND. !::validateFieldRange(cItemValue, jItemRules['min'], jItemRules['max'], cFieldPath + "[" + cValToChar(nK) + "]")
+					Return(.F.)
+				EndIf
+
+				If ValType(jItemRules['valueList']) == TYPE_ARRAY .AND. Len(jItemRules['valueList']) > 0 .AND. !::validateFieldValueList(cItemValue, jItemRules['valueList'], cFieldPath + "[" + cValToChar(nK) + "]")
+					Return(.F.)
+				EndIf
+			EndIf
+		Next nK
+	EndIf
+
+	// Validações adicionais para campos simples
+	If cTypeDTO == TYPE_CHARACTER
+		If !Empty(cPattern) .AND. !::validateFieldPattern(cValueReceived, cPattern, cFieldPath)
+			Return(.F.)
+		EndIf
+
+		If !::validateFieldLength(cValueReceived, nMinLength, nMaxLength, cFieldPath)
+			Return(.F.)
+		EndIf
+	EndIf
+
+	If cTypeDTO == TYPE_NUMERIC .AND. !::validateFieldRange(cValueReceived, nMinLength, nMaxLength, cFieldPath)
+		Return(.F.)
+	EndIf
+
+	If ValType(aValueList) == TYPE_ARRAY .AND. Len(aValueList) > 0 .AND. !::validateFieldValueList(cValueReceived, aValueList, cFieldPath)
+		Return(.F.)
+	EndIf
+
+Return(lIsValid)
+
+//---------------------------------------------------------------------------------------------------
+/*/{Protheus.doc} validateFieldType
+    Valida se o tipo do campo está correto.
+
+    @param cValue - Valor do campo.
+    @param cExpectedType - Tipo esperado.
+    @param cFieldName - Nome do campo.
+    @return Logical - Retorna .T. se o tipo estiver correto, .F. caso contrário.
+/*/
+//---------------------------------------------------------------------------------------------------
+Method validateFieldType(cValue, cExpectedType, cFieldName) Class DTOValidator
+	Local cTypeReceived := ValType(cValue)
+
+	If cTypeReceived != cExpectedType
+		::setErrorMessage("O campo [" + cFieldName + "] deveria ser do tipo [" + ::getTypeDescription(cExpectedType) + "].")
+		Return(.F.)
+	EndIf
+
+Return(.T.)
+
+//---------------------------------------------------------------------------------------------------
+/*/{Protheus.doc} validateFieldPattern
+    Valida o valor do campo com base em um padrão regex.
+
+    @param cValue - Valor do campo.
+    @param cPattern - Padrão regex.
+    @param cFieldName - Nome do campo.
+    @return Logical - Retorna .T. se o valor corresponder ao padrão, .F. caso contrário.
+/*/
+//---------------------------------------------------------------------------------------------------
+Method validateFieldPattern(cValue, cPattern, cFieldName) Class DTOValidator
+	Local oRegex := Regex():new(cPattern)
+
+	If !oRegex:fullMatch(cValue)
+		::setErrorMessage("O campo [" + cFieldName + "] não está no formato correto.")
+		FreeObj(oRegex)
+		Return(.F.)
+	EndIf
+
+	FreeObj(oRegex)
+Return(.T.)
+
+//---------------------------------------------------------------------------------------------------
+/*/{Protheus.doc} validateFieldLength
+    Valida o comprimento do campo (para strings).
+
+    @param cValue - Valor do campo.
+    @param nMin - Comprimento mínimo.
+    @param nMax - Comprimento máximo.
+    @param cFieldName - Nome do campo.
+    @return Logical - Retorna .T. se o comprimento estiver dentro dos limites, .F. caso contrário.
+/*/
+//---------------------------------------------------------------------------------------------------
+Method validateFieldLength(cValue, nMin, nMax, cFieldName) Class DTOValidator
+	Local nLength := Len(cValue)
+
+	If nMin != Nil .AND. nLength < nMin
+		::setErrorMessage("O campo [" + cFieldName + "] deve ter no mínimo " + cValToChar(nMin) + " caracteres.")
+		Return(.F.)
+	EndIf
+
+	If nMax != Nil .AND. nLength > nMax
+		::setErrorMessage("O campo [" + cFieldName + "] deve ter no máximo " + cValToChar(nMax) + " caracteres.")
+		Return(.F.)
+	EndIf
+
+Return(.T.)
+
+//---------------------------------------------------------------------------------------------------
+/*/{Protheus.doc} validateFieldRange
+    Valida o intervalo do campo (para números).
+
+    @param nValue - Valor do campo.
+    @param nMin - Valor mínimo.
+    @param nMax - Valor máximo.
+    @param cFieldName - Nome do campo.
+    @return Logical - Retorna .T. se o valor estiver dentro do intervalo, .F. caso contrário.
+/*/
+//---------------------------------------------------------------------------------------------------
+Method validateFieldRange(nValue, nMin, nMax, cFieldName) Class DTOValidator
+	If nMin != Nil .AND. nValue < nMin
+		::setErrorMessage("O campo [" + cFieldName + "] deve ser maior ou igual a " + cValToChar(nMin) + ".")
+		Return(.F.)
+	EndIf
+
+	If nMax != Nil .AND. nValue > nMax
+		::setErrorMessage("O campo [" + cFieldName + "] deve ser menor ou igual a " + cValToChar(nMax) + ".")
+		Return(.F.)
+	EndIf
+
+Return(.T.)
+
+//---------------------------------------------------------------------------------------------------
+/*/{Protheus.doc} validateFieldValueList
+    Valida se o valor do campo está em uma lista de valores permitidos.
+
+    @param cValue - Valor do campo.
+    @param aValueList - Lista de valores permitidos.
+    @param cFieldName - Nome do campo.
+    @return Logical - Retorna .T. se o valor estiver na lista, .F. caso contrário.
+/*/
+//---------------------------------------------------------------------------------------------------
+Method validateFieldValueList(cValue, aValueList, cFieldName) Class DTOValidator
+	Local nPos := aScan(aValueList, {|x| AllTrim(x) == cValue})
+
+	If nPos == 0
+		::setErrorMessage("O campo [" + cFieldName + "] permite os seguintes valores: [" + ArrayToStr(aValueList, "|") + "].")
+		Return(.F.)
+	EndIf
+
+Return(.T.)
+
+//---------------------------------------------------------------------------------------------------
+/*/{Protheus.doc} getTypeDescription
+    Retorna a descrição do tipo de dado.
+
+    @param cType - Tipo de dado.
+    @return Character - Descrição do tipo.
+/*/
+//---------------------------------------------------------------------------------------------------
+Method getTypeDescription(cType) Class DTOValidator
+	Local cDescription := ""
+
+	DO CASE
+	CASE cType == TYPE_ARRAY
+		cDescription := "Array"
+	CASE cType == TYPE_BLOCK
+		cDescription := "Bloco de Código"
+	CASE cType == TYPE_CHARACTER
+		cDescription := "Caracter"
+	CASE cType == TYPE_DATE
+		cDescription := "Date"
+	CASE cType == TYPE_BOOLEAN
+		cDescription := "Boolean"
+	CASE cType == TYPE_MEMO
+		cDescription := "Memo"
+	CASE cType == TYPE_NUMERIC
+		cDescription := "Numeric"
+	CASE cType == TYPE_OBJECT
+		cDescription := "Object"
+	CASE cType == TYPE_NULL
+		cDescription := "Null"
+	CASE cType == TYPE_JSON
+		cDescription := "Json"
+	OTHERWISE
+		cDescription := "Desconhecido"
+	ENDCASE
+Return(cDescription)
+
+//---------------------------------------------------------------------------------------------------
+/*/{Protheus.doc} setErrorMessage
+    Define a mensagem de erro.
+
+    @param cMessage - Mensagem de erro.
+/*/
+//---------------------------------------------------------------------------------------------------
+Method setErrorMessage(cMessage) Class DTOValidator
+	::errorMessage := cMessage
+Return
