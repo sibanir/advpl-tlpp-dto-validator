@@ -9,6 +9,7 @@ Exemplo simples validante DTOs (Data Transfer Objects) em ADVPL/TLPP, permitindo
 - ✅ Suporte para estruturas JSON aninhadas e arrays
 - ✅ Mensagens de erro descritivas e contextuais
 - ✅ Facilmente integrável a APIs REST e microsserviços
+- ✅ Validação automática baseada no dicionário de dados do Protheus (SX3)
 
 ## Instalação
 
@@ -40,6 +41,32 @@ jData := {;
 
 // Realizar validação
 lValid := oValidator:validateDTOStructure(jData, jRules)
+
+If !lValid
+    ConOut("Erro: " + oValidator:errorMessage)
+EndIf
+```
+
+### Validação por Dicionário de Dados
+
+```advpl
+#INCLUDE "TOTVS.CH"
+
+// Criar o validador
+oValidator := DTOValidator():new()
+
+// Dados a serem validados
+jData := {;
+    "a1_cod": "000001",;
+    "a1_nome": "João Silva",;
+    "a1_nreduz": "J.Silva";
+}
+
+// Validar usando dicionário - todos os campos da tabela
+lValid := oValidator:validateByDictionary(jData, 'SA1')
+
+// Validar usando dicionário - campos específicos
+lValid := oValidator:validateByDictionary(jData, 'SA1', {'A1_COD', 'A1_NOME', 'A1_NREDUZ'})
 
 If !lValid
     ConOut("Erro: " + oValidator:errorMessage)
@@ -119,13 +146,28 @@ jRules := {;
 Para integrar facilmente a validação em APIs REST:
 
 ```advpl
-// No controller da API
+// No controller da API - Validação com DTO customizado
 Method post() Class YourController
     Local jData := JsonObject():NewFromJson(oRest:GetBodyRequest())
     Local oDTO := YourDTO():new()
     Local oValidator := DTOValidator():new()
     
     If !oValidator:validateDTOStructure(jData, oDTO:validationRules)
+        oRest:SetStatus(400)
+        oRest:SetResponse({"error": .T., "message": oValidator:errorMessage})
+        Return .F.
+    EndIf
+    
+    // Processamento normal...
+Return .T.
+
+// No controller da API - Validação com dicionário
+Method post() Class CustomerController
+    Local jData := JsonObject():NewFromJson(oRest:GetBodyRequest())
+    Local oValidator := DTOValidator():new()
+    
+    // Valida usando estrutura da tabela SA1
+    If !oValidator:validateByDictionary(jData, 'SA1', {'A1_COD', 'A1_NOME', 'A1_TIPO'})
         oRest:SetStatus(400)
         oRest:SetResponse({"error": .T., "message": oValidator:errorMessage})
         Return .F.
