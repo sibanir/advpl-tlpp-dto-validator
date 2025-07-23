@@ -31,6 +31,7 @@ Class DTOValidator
 
 	Public Method new() Constructor
 	Public Method validateDTOStructure(jBodyReceived, jBodyDTO)
+	Public Method validateByDictionary(jBodyReceived, cAlias, aFields)
 	Private Method validateField(cFieldName, jFieldRules, jBodyReceived, cParentFieldName)
 	Private Method validateFieldType(cValue, cExpectedType, cFieldName)
 	Private Method validateFieldPattern(cValue, cPattern, cFieldName)
@@ -39,6 +40,7 @@ Class DTOValidator
 	Private Method validateFieldValueList(cValue, aValueList, cFieldName)
 	Private Method getTypeDescription(cType)
 	Private Method setErrorMessage(cMessage)
+	Private Method GetDTOByDictionary(cAlias, aFields)
 EndClass
 
 //---------------------------------------------------------------------------------------------------
@@ -375,3 +377,94 @@ Return(cDescription)
 Method setErrorMessage(cMessage) Class DTOValidator
 	::errorMessage := cMessage
 Return
+
+//---------------------------------------------------------------------------------------------------
+/*/{Protheus.doc} validateByDictionary
+    Valida a estrutura do DTO recebido com base no dicionário de dados do Protheus.
+
+    @param jBodyReceived - Objeto JSON recebido.
+    @param cAlias - Alias da tabela que será carregada para validação.
+	@param aFields - Array de campos que serão validados. Se não for informado, serão validados todos os campos da tabela.
+    @return Logical - Retorna .T. se a validação for bem-sucedida, .F. caso contrário.
+/*/
+//---------------------------------------------------------------------------------------------------
+Method validateByDictionary(jBodyReceived, cAlias, aFields) Class DTOValidator
+	Local jBodyDTOByDict := ::GetDTOByDictionary(cAlias, aFields)
+
+Return ::validateDTOStructure(jBodyReceived, jBodyDTOByDict)
+
+
+//---------------------------------------------------------------------------------------------------
+/*/{Protheus.doc} GetDTOByDictionary
+    Carrega as regras de validação do dicionário de dados do Protheus para um DTO.
+
+    @param cAlias - Alias da tabela que será carregada para validação.
+	@param aFields - Array de campos que serão validados. Se não for informado, serão validados todos os campos da tabela.
+    @return JsonObject - DTO contendo as regras de validação dos campos.
+/*/
+//---------------------------------------------------------------------------------------------------
+Method GetDTOByDictionary(cAlias, aFields) Class DTOValidator
+	Local jBodyDTOByDict := JsonObject():New()
+	Local jTemporary As Json
+	Local aDados As Array
+	Local nX As Numeric
+	Default aFields := {}
+
+	If Len(aFields) == 0
+		SX3->(DBSetOrder(1))
+		SX3->(MsSeek(cAlias))
+		While SX3->(!EoF()) .And. SX3->X3_ARQUIVO == cAlias
+			jTemporary := JsonObject():New()
+			jTemporary['type'] := SX3->X3_TIPO
+			jTemporary['required'] := X3Obrigat(SX3->X3_CAMPO)
+			If SX3->X3_TIPO != TYPE_MEMO
+				jTemporary['max'] := SX3->X3_TAMANHO
+			EndIf
+			If !Empty(SX3->X3_CBOX)
+				aDados := {}
+				If SubStr(SX3->X3_CBOX, 1, 1) == '#'
+					AEval(RetSX3Box(&(SubStr(SX3->X3_CBOX, 2)),,,SX3->X3_TAMANHO), {|x| IIf(!Empty(x[2]), aAdd(aDados, x[2]),)})
+				Else
+					AEval(RetSX3Box(SX3->X3_CBOX,,,SX3->X3_TAMANHO), {|x| IIf(!Empty(x[2]), aAdd(aDados, x[2]),)})
+				EndIf
+
+				If Len(aDados) > 0
+					jTemporary['valueList'] := aDados
+				EndIf
+			EndIf
+
+			jBodyDTOByDict[AllTrim(Lower(SX3->X3_CAMPO))] := jTemporary
+			SX3->(DBSkip())
+		EndDo
+	Else
+		For nX := 1 To Len(aFields)
+			SX3->(DBSetOrder(2))
+			SX3->(MsSeek(aFields[nX]))
+			If SX3->(Found()) .And. SX3->X3_ARQUIVO == cAlias
+				jTemporary := JsonObject():New()
+				jTemporary['required'] := X3Obrigat(SX3->X3_CAMPO)
+				If SX3->X3_TIPO == TYPE_MEMO
+					jTemporary['type'] := 'C'
+				Else
+					jTemporary['type'] := SX3->X3_TIPO
+					jTemporary['max'] := SX3->X3_TAMANHO
+				EndIf
+				If !Empty(SX3->X3_CBOX)
+					aDados := {}
+					If SubStr(SX3->X3_CBOX, 1, 1) == '#'
+						AEval(RetSX3Box(&(SubStr(SX3->X3_CBOX, 2)),,,SX3->X3_TAMANHO), {|x| IIf(!Empty(x[2]), aAdd(aDados, x[2]),)})
+					Else
+						AEval(RetSX3Box(SX3->X3_CBOX,,,SX3->X3_TAMANHO), {|x| IIf(!Empty(x[2]), aAdd(aDados, x[2]),)})
+					EndIf
+
+					If Len(aDados) > 0
+						jTemporary['valueList'] := aDados
+					EndIf
+				EndIf
+
+				jBodyDTOByDict[AllTrim(Lower(SX3->X3_CAMPO))] := jTemporary
+			EndIf
+		Next
+	EndIf
+
+Return jBodyDTOByDict
